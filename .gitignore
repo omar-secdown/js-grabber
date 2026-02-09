@@ -1,3 +1,7 @@
 __pycache__/
 *.pyc
 *.tmp
+domain.txt
+domains.txt
+*.txt
+!requirements.txt

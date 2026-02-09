@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-JS Grabber — Collect live JS URLs from targets using gau, katana, Wayback CDX API.
-All tools run in parallel. Results are deduplicated and filtered for 200 OK via httpx.
+JS Grabber — Collect live JS URLs from targets using gau and katana.
+Both tools run in parallel. Results are deduplicated and filtered for 200 OK via httpx.
 
 Usage:
     python3 js_grabber.py -d target.com -o output.txt
@@ -13,8 +13,6 @@ import sys
 import shutil
 import argparse
 import subprocess
-import requests
-from urllib.parse import quote
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 TOOL_PATHS = {}
@@ -59,15 +57,11 @@ def check_tools():
         else:
             print(f"  [-] {tool}: MISSING — {install_cmd}")
 
-    # Always have wayback (just HTTP, no tool needed)
-    print(f"  [+] wayback: OK (CDX API)")
-    available.append("wayback")
-
     if "httpx" not in available:
         print("\n  [!] httpx is required. Install it first.")
         sys.exit(1)
 
-    collectors = [t for t in available if t in ("gau", "katana", "wayback")]
+    collectors = [t for t in available if t in ("gau", "katana")]
     if not collectors:
         print("\n  [!] No collectors found. Install at least one: gau, katana")
         sys.exit(1)
@@ -121,47 +115,17 @@ def run_katana(domain):
         return [], str(e)
 
 
-def run_wayback(domain):
-    """Fetch JS URLs from Wayback Machine CDX API."""
-    try:
-        # First check if archive.org responds
-        check = requests.head("https://web.archive.org", allow_redirects=True)
-        if check.status_code >= 500:
-            return [], "archive.org is down"
-    except requests.RequestException:
-        return [], "archive.org not reachable"
-
-    try:
-        encoded_domain = quote(domain + "/*", safe="")
-        url = (
-            f"https://web.archive.org/cdx/search/cdx"
-            f"?url={encoded_domain}"
-            f"&output=text&fl=original&collapse=urlkey&from="
-        )
-        resp = requests.get(url)
-        if resp.status_code != 200:
-            return [], f"CDX API returned {resp.status_code}"
-
-        js_urls = _filter_js(resp.text.splitlines())
-        return js_urls, None
-
-    except Exception as e:
-        return [], str(e)
-
-
 def collect_domain(domain, collectors):
     """Run all collectors in parallel for one domain. Returns list of JS URLs."""
     print(f"\n  [{domain}]")
     all_urls = []
 
     futures = {}
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=2) as executor:
         if "gau" in collectors:
             futures[executor.submit(run_gau, domain)] = "gau"
         if "katana" in collectors:
             futures[executor.submit(run_katana, domain)] = "katana"
-        if "wayback" in collectors:
-            futures[executor.submit(run_wayback, domain)] = "wayback"
 
         for future in as_completed(futures):
             tool_name = futures[future]

@@ -7,9 +7,7 @@ Collect live JavaScript file URLs from target domains using multiple reconnaissa
 | Tool | Source |
 |------|--------|
 | [gau](https://github.com/lc/gau) | Fetch known URLs from AlienVault OTX, Wayback Machine, Common Crawl |
-| [waybackurls](https://github.com/tomnomnom/waybackurls) | Fetch URLs from Wayback Machine |
 | [katana](https://github.com/projectdiscovery/katana) | Active crawling with JS parsing |
-| [waymore](https://github.com/xnl-h4ck3r/waymore) | Fetch URLs from multiple archive sources |
 | [httpx](https://github.com/projectdiscovery/httpx) | Filter for live (200 OK) URLs |
 
 ## Installation
@@ -17,12 +15,8 @@ Collect live JavaScript file URLs from target domains using multiple reconnaissa
 ```bash
 # Install Go tools
 go install github.com/lc/gau/v2/cmd/gau@latest
-go install github.com/tomnomnom/waybackurls@latest
 go install github.com/projectdiscovery/katana/cmd/katana@latest
 go install github.com/projectdiscovery/httpx/cmd/httpx@latest
-
-# Install waymore
-pip3 install waymore
 ```
 
 ## Usage
@@ -37,7 +31,7 @@ python3 js_grabber.py -dL domains.txt -o output.txt
 
 ## How It Works
 
-1. Runs all available collectors (gau, waybackurls, katana, waymore) against each domain
+1. Runs gau and katana in parallel against each domain
 2. Filters output to `.js` files only
 3. Deduplicates all collected URLs
 4. Runs httpx to keep only live URLs returning 200 OK
