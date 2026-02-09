@@ -249,7 +249,6 @@ def httpx_filter(urls, output_file):
                 "-mc", "200",
                 "-silent",
                 "-threads", "50",
-                "-timeout", "10",
             ],
             input=input_data,
             capture_output=True,
