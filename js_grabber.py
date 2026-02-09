@@ -110,16 +110,13 @@ def run_gau(domain, output_file):
     try:
         result = subprocess.run(
             [tool, "--threads", "5", "--subs", domain],
-            capture_output=True, text=True, timeout=600
+            capture_output=True, text=True
         )
         js_urls = _filter_js(result.stdout.splitlines())
         if js_urls:
             with open(output_file, "a") as f:
                 f.write("\n".join(js_urls) + "\n")
         return len(js_urls)
-    except subprocess.TimeoutExpired:
-        print(f"    [!] gau timed out for {domain}")
-        return 0
     except Exception as e:
         print(f"    [!] gau error: {e}")
         return 0
@@ -133,16 +130,13 @@ def run_waybackurls(domain, output_file):
     try:
         result = subprocess.run(
             [tool, domain],
-            capture_output=True, text=True, timeout=600
+            capture_output=True, text=True
         )
         js_urls = _filter_js(result.stdout.splitlines())
         if js_urls:
             with open(output_file, "a") as f:
                 f.write("\n".join(js_urls) + "\n")
         return len(js_urls)
-    except subprocess.TimeoutExpired:
-        print(f"    [!] waybackurls timed out for {domain}")
-        return 0
     except Exception as e:
         print(f"    [!] waybackurls error: {e}")
         return 0
@@ -163,16 +157,13 @@ def run_katana(domain, output_file):
                 "-ef", "css,png,jpg,jpeg,gif,svg,ico,woff,woff2,ttf,eot",
                 "-silent",
             ],
-            capture_output=True, text=True, timeout=600
+            capture_output=True, text=True
         )
         js_urls = _filter_js(result.stdout.splitlines())
         if js_urls:
             with open(output_file, "a") as f:
                 f.write("\n".join(js_urls) + "\n")
         return len(js_urls)
-    except subprocess.TimeoutExpired:
-        print(f"    [!] katana timed out for {domain}")
-        return 0
     except Exception as e:
         print(f"    [!] katana error: {e}")
         return 0
@@ -192,7 +183,7 @@ def run_waymore(domain, output_file):
         else:
             cmd = [tool, "-i", domain, "-mode", "U", "-oU", urls_file]
 
-        subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+        subprocess.run(cmd, capture_output=True, text=True)
 
         count = 0
         if os.path.isfile(urls_file):
@@ -206,9 +197,6 @@ def run_waymore(domain, output_file):
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return count
 
-    except subprocess.TimeoutExpired:
-        print(f"    [!] waymore timed out for {domain}")
-        return 0
     except Exception as e:
         print(f"    [!] waymore error: {e}")
         return 0
@@ -275,8 +263,7 @@ def httpx_filter(urls, output_file):
             ],
             input=input_data,
             capture_output=True,
-            text=True,
-            timeout=3600
+            text=True
         )
 
         live = []
@@ -293,12 +280,9 @@ def httpx_filter(urls, output_file):
 
         return len(live)
 
-    except subprocess.TimeoutExpired:
-        print("[!] httpx timed out. Saving unfiltered list.")
-        with open(output_file, "w") as f:
-            for url in urls:
-                f.write(url + "\n")
-        return len(urls)
+    except Exception as e:
+        print(f"[!] httpx error: {e}")
+        return 0
 
 
 def main():
