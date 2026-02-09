@@ -103,13 +103,15 @@ def _filter_js(lines):
 
 
 def run_gau(domain, output_file):
-    """Run gau, filter JS, append to output."""
+    """Run gau via stdin pipe, filter JS, append to output."""
     tool = _find_tool("gau")
     if not tool:
         return 0
     try:
+        # echo domain | gau | grep "js$"
         result = subprocess.run(
-            [tool, "--threads", "5", "--subs", domain],
+            [tool],
+            input=domain,
             capture_output=True, text=True
         )
         js_urls = _filter_js(result.stdout.splitlines())
@@ -123,13 +125,15 @@ def run_gau(domain, output_file):
 
 
 def run_waybackurls(domain, output_file):
-    """Run waybackurls, filter JS, append to output."""
+    """Run waybackurls via stdin pipe, filter JS, append to output."""
     tool = _find_tool("waybackurls")
     if not tool:
         return 0
     try:
+        # echo domain | waybackurls | grep "js$"
         result = subprocess.run(
-            [tool, domain],
+            [tool],
+            input=domain,
             capture_output=True, text=True
         )
         js_urls = _filter_js(result.stdout.splitlines())
@@ -143,20 +147,14 @@ def run_waybackurls(domain, output_file):
 
 
 def run_katana(domain, output_file):
-    """Run katana, filter JS, append to output."""
+    """Run katana -u domain, filter JS, append to output."""
     tool = _find_tool("katana")
     if not tool:
         return 0
     try:
+        # katana -u domain | grep "js$"
         result = subprocess.run(
-            [
-                tool,
-                "-u", f"https://{domain}",
-                "-d", "3",
-                "-jc",
-                "-ef", "css,png,jpg,jpeg,gif,svg,ico,woff,woff2,ttf,eot",
-                "-silent",
-            ],
+            [tool, "-u", domain, "-silent"],
             capture_output=True, text=True
         )
         js_urls = _filter_js(result.stdout.splitlines())
@@ -170,7 +168,7 @@ def run_katana(domain, output_file):
 
 
 def run_waymore(domain, output_file):
-    """Run waymore, filter JS, append to output."""
+    """Run waymore with -ko to filter JS only, append to output."""
     tool = _find_tool("waymore")
     if not tool:
         return 0
@@ -178,17 +176,18 @@ def run_waymore(domain, output_file):
         tmp_dir = tempfile.mkdtemp(prefix="waymore_")
         urls_file = os.path.join(tmp_dir, "urls.txt")
 
+        # waymore -i domain -mode U -ko "\.js(\?|$)" -oU output
         if tool == "waymore_module":
-            cmd = ["python3", "-m", "waymore", "-i", domain, "-mode", "U", "-oU", urls_file]
+            cmd = ["python3", "-m", "waymore", "-i", domain, "-mode", "U", "-ko", r"\.js(\?|$)", "-oU", urls_file]
         else:
-            cmd = [tool, "-i", domain, "-mode", "U", "-oU", urls_file]
+            cmd = [tool, "-i", domain, "-mode", "U", "-ko", r"\.js(\?|$)", "-oU", urls_file]
 
         subprocess.run(cmd, capture_output=True, text=True)
 
         count = 0
         if os.path.isfile(urls_file):
             with open(urls_file, "r") as f:
-                js_urls = _filter_js(f.readlines())
+                js_urls = [line.strip() for line in f if line.strip()]
             if js_urls:
                 with open(output_file, "a") as f:
                     f.write("\n".join(js_urls) + "\n")
