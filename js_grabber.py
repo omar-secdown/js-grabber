@@ -110,7 +110,7 @@ def run_gau(domain, output_file):
     try:
         result = subprocess.run(
             [tool, "--threads", "5", "--subs", domain],
-            capture_output=True, text=True, timeout=300
+            capture_output=True, text=True, timeout=600
         )
         js_urls = _filter_js(result.stdout.splitlines())
         if js_urls:
@@ -133,7 +133,7 @@ def run_waybackurls(domain, output_file):
     try:
         result = subprocess.run(
             [tool, domain],
-            capture_output=True, text=True, timeout=300
+            capture_output=True, text=True, timeout=600
         )
         js_urls = _filter_js(result.stdout.splitlines())
         if js_urls:
@@ -163,7 +163,7 @@ def run_katana(domain, output_file):
                 "-ef", "css,png,jpg,jpeg,gif,svg,ico,woff,woff2,ttf,eot",
                 "-silent",
             ],
-            capture_output=True, text=True, timeout=300
+            capture_output=True, text=True, timeout=600
         )
         js_urls = _filter_js(result.stdout.splitlines())
         if js_urls:
@@ -192,7 +192,7 @@ def run_waymore(domain, output_file):
         else:
             cmd = [tool, "-i", domain, "-mode", "U", "-oU", urls_file]
 
-        subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        subprocess.run(cmd, capture_output=True, text=True, timeout=900)
 
         count = 0
         if os.path.isfile(urls_file):
@@ -276,7 +276,7 @@ def httpx_filter(urls, output_file):
             input=input_data,
             capture_output=True,
             text=True,
-            timeout=1800
+            timeout=3600
         )
 
         live = []
