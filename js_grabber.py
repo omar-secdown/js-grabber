@@ -42,7 +42,7 @@ def _find_tool(name):
         try:
             result = subprocess.run(
                 ["python3", "-m", "waymore", "--help"],
-                capture_output=True, timeout=10
+                capture_output=True
             )
             if result.returncode == 0:
                 TOOL_PATHS[name] = "waymore_module"
