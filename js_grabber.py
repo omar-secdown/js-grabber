@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-JS Grabber — Collect live JS URLs from targets using gau, waybackurls, katana, waymore.
+JS Grabber — Collect live JS URLs from targets using gau, katana, waymore.
+All tools run in parallel. Results are deduplicated and filtered for 200 OK via httpx.
 
 Usage:
     python3 js_grabber.py -d target.com -o output.txt
@@ -14,11 +15,9 @@ import shutil
 import argparse
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 TOOL_PATHS = {}
-
-# Regex to match JS file URLs — catches .js at end of path (before query string or fragment)
-JS_URL_PATTERN = re.compile(r'\.js(?:\?[^#]*)?(?:#.*)?$', re.IGNORECASE)
 
 
 def _find_tool(name):
@@ -39,7 +38,6 @@ def _find_tool(name):
             TOOL_PATHS[name] = path
             return path
 
-    # waymore as Python module
     if name == "waymore":
         try:
             result = subprocess.run(
@@ -59,7 +57,6 @@ def check_tools():
     """Check required tools, return list of available collectors."""
     tools = {
         "gau": "go install github.com/lc/gau/v2/cmd/gau@latest",
-        "waybackurls": "go install github.com/tomnomnom/waybackurls@latest",
         "katana": "go install github.com/projectdiscovery/katana/cmd/katana@latest",
         "waymore": "pip3 install waymore",
         "httpx": "go install github.com/projectdiscovery/httpx/cmd/httpx@latest",
@@ -75,14 +72,13 @@ def check_tools():
         else:
             print(f"  [-] {tool}: MISSING — {install_cmd}")
 
-    # httpx is critical
     if "httpx" not in available:
         print("\n  [!] httpx is required. Install it first.")
         sys.exit(1)
 
-    collectors = [t for t in available if t in ("gau", "waybackurls", "katana", "waymore")]
+    collectors = [t for t in available if t in ("gau", "katana", "waymore")]
     if not collectors:
-        print("\n  [!] No collectors found. Install at least one: gau, waybackurls, katana, waymore")
+        print("\n  [!] No collectors found. Install at least one: gau, katana, waymore")
         sys.exit(1)
 
     return collectors
@@ -95,152 +91,147 @@ def _filter_js(lines):
         url = line.strip()
         if not url:
             continue
-        # Strip query string and fragment for the check
         path_part = url.split("?")[0].split("#")[0]
         if path_part.endswith(".js"):
             results.append(url)
     return results
 
 
-def run_gau(domain, output_file):
-    """Run gau via stdin pipe, filter JS, append to output."""
+def run_gau(domain):
+    """echo domain | gau — returns list of JS URLs."""
     tool = _find_tool("gau")
     if not tool:
-        return 0
+        return [], "gau not found"
     try:
-        # echo domain | gau | grep "js$"
         result = subprocess.run(
             [tool],
             input=domain,
             capture_output=True, text=True
         )
         js_urls = _filter_js(result.stdout.splitlines())
-        if js_urls:
-            with open(output_file, "a") as f:
-                f.write("\n".join(js_urls) + "\n")
-        return len(js_urls)
+        return js_urls, None
     except Exception as e:
-        print(f"    [!] gau error: {e}")
-        return 0
+        return [], str(e)
 
 
-def run_waybackurls(domain, output_file):
-    """Run waybackurls via stdin pipe, filter JS, append to output."""
-    tool = _find_tool("waybackurls")
-    if not tool:
-        return 0
-    try:
-        # echo domain | waybackurls | grep "js$"
-        result = subprocess.run(
-            [tool],
-            input=domain,
-            capture_output=True, text=True
-        )
-        js_urls = _filter_js(result.stdout.splitlines())
-        if js_urls:
-            with open(output_file, "a") as f:
-                f.write("\n".join(js_urls) + "\n")
-        return len(js_urls)
-    except Exception as e:
-        print(f"    [!] waybackurls error: {e}")
-        return 0
-
-
-def run_katana(domain, output_file):
-    """Run katana -u domain, filter JS, append to output."""
+def run_katana(domain):
+    """katana -u domain -silent — returns list of JS URLs."""
     tool = _find_tool("katana")
     if not tool:
-        return 0
+        return [], "katana not found"
     try:
-        # katana -u domain | grep "js$"
         result = subprocess.run(
             [tool, "-u", domain, "-silent"],
             capture_output=True, text=True
         )
         js_urls = _filter_js(result.stdout.splitlines())
-        if js_urls:
-            with open(output_file, "a") as f:
-                f.write("\n".join(js_urls) + "\n")
-        return len(js_urls)
+        return js_urls, None
     except Exception as e:
-        print(f"    [!] katana error: {e}")
-        return 0
+        return [], str(e)
 
 
-def run_waymore(domain, output_file):
-    """Run waymore with -ko to filter JS only, append to output."""
+def run_waymore(domain):
+    """waymore -i domain -mode B -oijs -ko — returns list of JS URLs + inline JS files."""
     tool = _find_tool("waymore")
     if not tool:
-        return 0
+        return [], [], "waymore not found"
     try:
         tmp_dir = tempfile.mkdtemp(prefix="waymore_")
         urls_file = os.path.join(tmp_dir, "urls.txt")
+        responses_dir = os.path.join(tmp_dir, "responses")
 
-        # waymore -i domain -mode U -ko "\.js(\?|$)" -oU output
         if tool == "waymore_module":
-            cmd = ["python3", "-m", "waymore", "-i", domain, "-mode", "U", "-ko", r"\.js(\?|$)", "-oU", urls_file]
+            cmd = [
+                "python3", "-m", "waymore",
+                "-i", domain,
+                "-mode", "B",
+                "-ko", r"\.js(\?|$)",
+                "-oU", urls_file,
+                "-oR", responses_dir,
+                "-oijs",
+            ]
         else:
-            cmd = [tool, "-i", domain, "-mode", "U", "-ko", r"\.js(\?|$)", "-oU", urls_file]
+            cmd = [
+                tool,
+                "-i", domain,
+                "-mode", "B",
+                "-ko", r"\.js(\?|$)",
+                "-oU", urls_file,
+                "-oR", responses_dir,
+                "-oijs",
+            ]
 
         subprocess.run(cmd, capture_output=True, text=True)
 
-        count = 0
+        # Collect JS URLs
+        js_urls = []
         if os.path.isfile(urls_file):
             with open(urls_file, "r") as f:
                 js_urls = [line.strip() for line in f if line.strip()]
-            if js_urls:
-                with open(output_file, "a") as f:
-                    f.write("\n".join(js_urls) + "\n")
-                count = len(js_urls)
 
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        return count
+        # Collect inline JS files from responses directory
+        inline_js_files = []
+        if os.path.isdir(responses_dir):
+            for root, dirs, files in os.walk(responses_dir):
+                for fname in files:
+                    if fname.startswith("combinedInline") and fname.endswith(".js"):
+                        inline_js_files.append(os.path.join(root, fname))
+
+        return js_urls, inline_js_files, None
 
     except Exception as e:
-        print(f"    [!] waymore error: {e}")
-        return 0
+        return [], [], str(e)
 
 
-def collect_domain(domain, raw_file, collectors):
-    """Run all collectors for one domain."""
+def collect_domain(domain, collectors):
+    """Run all collectors in parallel for one domain. Returns (js_urls, inline_js_files)."""
     print(f"\n  [{domain}]")
-    total = 0
+    all_urls = []
+    inline_js_files = []
 
-    if "gau" in collectors:
-        count = run_gau(domain, raw_file)
-        print(f"    gau: {count}")
-        total += count
+    futures = {}
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        if "gau" in collectors:
+            futures[executor.submit(run_gau, domain)] = "gau"
+        if "katana" in collectors:
+            futures[executor.submit(run_katana, domain)] = "katana"
+        if "waymore" in collectors:
+            futures[executor.submit(run_waymore, domain)] = "waymore"
 
-    if "waybackurls" in collectors:
-        count = run_waybackurls(domain, raw_file)
-        print(f"    waybackurls: {count}")
-        total += count
+        for future in as_completed(futures):
+            tool_name = futures[future]
+            try:
+                result = future.result()
+                if tool_name == "waymore":
+                    urls, ijs_files, err = result
+                    if err:
+                        print(f"    [!] {tool_name}: {err}")
+                    else:
+                        all_urls.extend(urls)
+                        inline_js_files.extend(ijs_files)
+                        print(f"    {tool_name}: {len(urls)} URLs, {len(ijs_files)} inline JS files")
+                else:
+                    urls, err = result
+                    if err:
+                        print(f"    [!] {tool_name}: {err}")
+                    else:
+                        all_urls.extend(urls)
+                        print(f"    {tool_name}: {len(urls)}")
+            except Exception as e:
+                print(f"    [!] {tool_name}: {e}")
 
-    if "katana" in collectors:
-        count = run_katana(domain, raw_file)
-        print(f"    katana: {count}")
-        total += count
-
-    if "waymore" in collectors:
-        count = run_waymore(domain, raw_file)
-        print(f"    waymore: {count}")
-        total += count
-
-    return total
+    return all_urls, inline_js_files
 
 
-def dedup(raw_file):
-    """Read raw file, return sorted unique URLs."""
-    if not os.path.isfile(raw_file):
-        return []
+def dedup(urls):
+    """Deduplicate URL list, return sorted unique list."""
     seen = set()
     unique = []
-    with open(raw_file, "r") as f:
-        for line in f:
-            url = line.strip()
-            if url and url not in seen:
-                seen.add(url)
-                unique.append(url)
+    for url in urls:
+        url = url.strip()
+        if url and url not in seen:
+            seen.add(url)
+            unique.append(url)
     return sorted(unique)
 
 
@@ -295,7 +286,6 @@ def main():
 
     args = parser.parse_args()
 
-    # Build domain list
     if args.d:
         domains = [args.d.strip()]
     else:
@@ -309,47 +299,51 @@ def main():
         print("[!] No domains provided")
         sys.exit(1)
 
-    # Check tools
     print("[*] Checking tools...")
     collectors = check_tools()
     print(f"\n[*] {len(domains)} domain(s) | tools: {', '.join(collectors)}")
 
-    # Ensure output directory exists
     out_dir = os.path.dirname(args.o)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
 
-    # Temp raw file
-    raw_file = args.o + ".raw.tmp"
-    open(raw_file, "w").close()
+    # Collect from all domains
+    all_urls = []
+    all_inline_js = []
 
-    # Collect
-    total_raw = 0
     for domain in domains:
-        total_raw += collect_domain(domain, raw_file, collectors)
+        urls, inline_files = collect_domain(domain, collectors)
+        all_urls.extend(urls)
+        all_inline_js.extend(inline_files)
 
-    if total_raw == 0:
+    if not all_urls and not all_inline_js:
         print("\n[!] No JS URLs found")
-        os.remove(raw_file)
         sys.exit(0)
 
     # Dedup
-    print(f"\n[*] Deduplicating {total_raw} raw URLs...")
-    unique_urls = dedup(raw_file)
+    print(f"\n[*] Deduplicating {len(all_urls)} raw URLs...")
+    unique_urls = dedup(all_urls)
     print(f"[+] {len(unique_urls)} unique JS URLs")
 
     # httpx filter
     live_count = httpx_filter(unique_urls, args.o)
 
-    # Cleanup
-    os.remove(raw_file)
+    # Save inline JS files list if any were found
+    if all_inline_js:
+        inline_output = args.o + ".inline_js"
+        with open(inline_output, "w") as f:
+            for path in all_inline_js:
+                f.write(path + "\n")
+        print(f"[+] {len(all_inline_js)} inline JS files saved to: {inline_output}")
 
     # Summary
     print(f"\n[*] Done")
     print(f"    Domains: {len(domains)}")
-    print(f"    Raw: {total_raw}")
+    print(f"    Raw: {len(all_urls)}")
     print(f"    Unique: {len(unique_urls)}")
     print(f"    Live (200): {live_count}")
+    if all_inline_js:
+        print(f"    Inline JS: {len(all_inline_js)}")
     print(f"    Output: {args.o}")
 
 
