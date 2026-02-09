@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-JS Grabber — Collect live JS URLs from targets using gau, katana, waymore.
+JS Grabber — Collect live JS URLs from targets using gau, katana, Wayback CDX API.
 All tools run in parallel. Results are deduplicated and filtered for 200 OK via httpx.
 
 Usage:
@@ -9,12 +9,12 @@ Usage:
 """
 
 import os
-import re
 import sys
 import shutil
 import argparse
 import subprocess
-import tempfile
+import requests
+from urllib.parse import quote
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 TOOL_PATHS = {}
@@ -38,18 +38,6 @@ def _find_tool(name):
             TOOL_PATHS[name] = path
             return path
 
-    if name == "waymore":
-        try:
-            result = subprocess.run(
-                ["python3", "-m", "waymore", "--help"],
-                capture_output=True
-            )
-            if result.returncode == 0:
-                TOOL_PATHS[name] = "waymore_module"
-                return "waymore_module"
-        except Exception:
-            pass
-
     return None
 
 
@@ -58,7 +46,6 @@ def check_tools():
     tools = {
         "gau": "go install github.com/lc/gau/v2/cmd/gau@latest",
         "katana": "go install github.com/projectdiscovery/katana/cmd/katana@latest",
-        "waymore": "pip3 install waymore",
         "httpx": "go install github.com/projectdiscovery/httpx/cmd/httpx@latest",
     }
 
@@ -72,13 +59,17 @@ def check_tools():
         else:
             print(f"  [-] {tool}: MISSING — {install_cmd}")
 
+    # Always have wayback (just HTTP, no tool needed)
+    print(f"  [+] wayback: OK (CDX API)")
+    available.append("wayback")
+
     if "httpx" not in available:
         print("\n  [!] httpx is required. Install it first.")
         sys.exit(1)
 
-    collectors = [t for t in available if t in ("gau", "katana", "waymore")]
+    collectors = [t for t in available if t in ("gau", "katana", "wayback")]
     if not collectors:
-        print("\n  [!] No collectors found. Install at least one: gau, katana, waymore")
+        print("\n  [!] No collectors found. Install at least one: gau, katana")
         sys.exit(1)
 
     return collectors
@@ -130,64 +121,38 @@ def run_katana(domain):
         return [], str(e)
 
 
-def run_waymore(domain):
-    """waymore -i domain -mode B -oijs -ko — returns list of JS URLs + inline JS files."""
-    tool = _find_tool("waymore")
-    if not tool:
-        return [], [], "waymore not found"
+def run_wayback(domain):
+    """Fetch JS URLs from Wayback Machine CDX API."""
     try:
-        tmp_dir = tempfile.mkdtemp(prefix="waymore_")
-        urls_file = os.path.join(tmp_dir, "urls.txt")
-        responses_dir = os.path.join(tmp_dir, "responses")
+        # First check if archive.org responds
+        check = requests.head("https://web.archive.org", allow_redirects=True)
+        if check.status_code >= 500:
+            return [], "archive.org is down"
+    except requests.RequestException:
+        return [], "archive.org not reachable"
 
-        if tool == "waymore_module":
-            cmd = [
-                "python3", "-m", "waymore",
-                "-i", domain,
-                "-mode", "B",
-                "-ko", r"\.js(\?|$)",
-                "-oU", urls_file,
-                "-oR", responses_dir,
-                "-oijs",
-            ]
-        else:
-            cmd = [
-                tool,
-                "-i", domain,
-                "-mode", "B",
-                "-ko", r"\.js(\?|$)",
-                "-oU", urls_file,
-                "-oR", responses_dir,
-                "-oijs",
-            ]
+    try:
+        encoded_domain = quote(domain + "/*", safe="")
+        url = (
+            f"https://web.archive.org/cdx/search/cdx"
+            f"?url={encoded_domain}"
+            f"&output=text&fl=original&collapse=urlkey&from="
+        )
+        resp = requests.get(url)
+        if resp.status_code != 200:
+            return [], f"CDX API returned {resp.status_code}"
 
-        subprocess.run(cmd, capture_output=True, text=True)
-
-        # Collect JS URLs
-        js_urls = []
-        if os.path.isfile(urls_file):
-            with open(urls_file, "r") as f:
-                js_urls = [line.strip() for line in f if line.strip()]
-
-        # Collect inline JS files from responses directory
-        inline_js_files = []
-        if os.path.isdir(responses_dir):
-            for root, dirs, files in os.walk(responses_dir):
-                for fname in files:
-                    if fname.startswith("combinedInline") and fname.endswith(".js"):
-                        inline_js_files.append(os.path.join(root, fname))
-
-        return js_urls, inline_js_files, None
+        js_urls = _filter_js(resp.text.splitlines())
+        return js_urls, None
 
     except Exception as e:
-        return [], [], str(e)
+        return [], str(e)
 
 
 def collect_domain(domain, collectors):
-    """Run all collectors in parallel for one domain. Returns (js_urls, inline_js_files)."""
+    """Run all collectors in parallel for one domain. Returns list of JS URLs."""
     print(f"\n  [{domain}]")
     all_urls = []
-    inline_js_files = []
 
     futures = {}
     with ThreadPoolExecutor(max_workers=3) as executor:
@@ -195,32 +160,22 @@ def collect_domain(domain, collectors):
             futures[executor.submit(run_gau, domain)] = "gau"
         if "katana" in collectors:
             futures[executor.submit(run_katana, domain)] = "katana"
-        if "waymore" in collectors:
-            futures[executor.submit(run_waymore, domain)] = "waymore"
+        if "wayback" in collectors:
+            futures[executor.submit(run_wayback, domain)] = "wayback"
 
         for future in as_completed(futures):
             tool_name = futures[future]
             try:
-                result = future.result()
-                if tool_name == "waymore":
-                    urls, ijs_files, err = result
-                    if err:
-                        print(f"    [!] {tool_name}: {err}")
-                    else:
-                        all_urls.extend(urls)
-                        inline_js_files.extend(ijs_files)
-                        print(f"    {tool_name}: {len(urls)} URLs, {len(ijs_files)} inline JS files")
+                urls, err = future.result()
+                if err:
+                    print(f"    [!] {tool_name}: {err}")
                 else:
-                    urls, err = result
-                    if err:
-                        print(f"    [!] {tool_name}: {err}")
-                    else:
-                        all_urls.extend(urls)
-                        print(f"    {tool_name}: {len(urls)}")
+                    all_urls.extend(urls)
+                    print(f"    {tool_name}: {len(urls)}")
             except Exception as e:
                 print(f"    [!] {tool_name}: {e}")
 
-    return all_urls, inline_js_files
+    return all_urls
 
 
 def dedup(urls):
@@ -308,14 +263,12 @@ def main():
 
     # Collect from all domains
     all_urls = []
-    all_inline_js = []
 
     for domain in domains:
-        urls, inline_files = collect_domain(domain, collectors)
+        urls = collect_domain(domain, collectors)
         all_urls.extend(urls)
-        all_inline_js.extend(inline_files)
 
-    if not all_urls and not all_inline_js:
+    if not all_urls:
         print("\n[!] No JS URLs found")
         sys.exit(0)
 
@@ -327,22 +280,12 @@ def main():
     # httpx filter
     live_count = httpx_filter(unique_urls, args.o)
 
-    # Save inline JS files list if any were found
-    if all_inline_js:
-        inline_output = args.o + ".inline_js"
-        with open(inline_output, "w") as f:
-            for path in all_inline_js:
-                f.write(path + "\n")
-        print(f"[+] {len(all_inline_js)} inline JS files saved to: {inline_output}")
-
     # Summary
     print(f"\n[*] Done")
     print(f"    Domains: {len(domains)}")
     print(f"    Raw: {len(all_urls)}")
     print(f"    Unique: {len(unique_urls)}")
     print(f"    Live (200): {live_count}")
-    if all_inline_js:
-        print(f"    Inline JS: {len(all_inline_js)}")
     print(f"    Output: {args.o}")
 
 
